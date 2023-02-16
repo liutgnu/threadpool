@@ -30,7 +30,7 @@ int main(int argc, char* args[])
 	func_args_t funcs_a[4] = {{fun, (void *)(i+0)}, {fun, (void *)(i+1)}, {fun, (void *)(i+2)}, {fun, (void *)(i+3)}};
 	func_args_t funcs_b[4] = {{fun, (void *)(i+4)}, {fun, (void *)(i+5)}, {fun, (void *)(i+6)}, {fun, (void *)(i+7)}};
 	func_args_t funcs_c[4] = {{fun, (void *)(i+8)}, {fun, (void *)(i+9)}, {fun, (void *)(i+10)}, {fun, (void *)(i+11)}};
-	func_args_t funcs_d[4] = {{fun, (void *)(i+12)}, {fun, (void *)(i+13)}, {fun, (void *)(i+14)}, {fun, (void *)(i+15)}};
+	func_args_t funcs_d[4] = {{fun, (void *)(i+12)}, {fun, (void *)(i+13)}, {fun, (void *)(i+14)}, {({void *late(void *){sleep(1);printf("late func...\n");}late;}), NULL}};
 	func_args_t funcs_e[4] = {{fun, (void *)(i+16)}, {fun, (void *)(i+17)}, {fun, (void *)(i+18)}, {fun, (void *)(i+19)}};
 
 	group1 = add_works_to_group(4, funcs_a);

@@ -34,6 +34,7 @@ typedef struct thread_pool {
 	size_t		maxnum_thread;
 	pthread_t	*thread;		// a array of threads
 	pthread_cond_t	queue_ready;		// condition varaible
+	pthread_cond_t	loop_ready;		// condition varaible
 	pthread_mutex_t	queue_lock;		// queue lock
 	work_group_t	*work_group_head;
 

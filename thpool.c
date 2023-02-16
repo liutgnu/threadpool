@@ -54,6 +54,12 @@ void *group_routine(void *args)
 			group = group->next_group;
 		} while (group != pool->work_group_head);
 
+		/*
+		 * We didn't find a runnable task after all group_locks are
+		 * tried, it must be time consuming task, so we wait here utill
+		 * task finishes to wake us up.
+		 */
+		pthread_cond_wait(&pool->loop_ready, &pool->queue_lock);
 		pthread_mutex_unlock(&pool->queue_lock);
 		continue;
 
@@ -91,8 +97,9 @@ success:
 			}
 			remove_group_from_pool(pool, group);
 			pthread_mutex_unlock(&group->group_lock);
-			free(group->work_head);
-			free(group);
+			// Wakeup thread which is waiting due to all groups are busy
+			pthread_cond_broadcast(&pool->loop_ready);
+			add_group_to_pool_cleanup(pool, group);
 		} else if (group->work_num > 1 && group->group_status != GROUP_HANDLED) {
 			// We are groups with multiple works, so for each work we create a group, so the later one 
 			group->dep_group_num += group->work_num;
@@ -134,6 +141,7 @@ void create_threadpool(thread_pool_t **pool, size_t max_thread_num)
 	assert(pthread_mutex_init(&((*pool)->queue_lock), NULL) == 0);
 	assert(pthread_mutex_init(&((*pool)->clean_queue_lock), NULL) == 0);
 	assert(pthread_cond_init(&((*pool)->queue_ready), NULL) == 0);
+	assert(pthread_cond_init(&((*pool)->loop_ready), NULL) == 0);
  
 	for (int i = 0; i < max_thread_num; i++) {
 		pp *p = malloc(sizeof(pp));
@@ -152,12 +160,10 @@ void destroy_threadpool(thread_pool_t* pool)
 		return;
 	}
  
-	pthread_mutex_lock(&pool->queue_lock);
 	pool->shutdown = 1;
 	pthread_cond_broadcast(&pool->queue_ready);
-	pthread_mutex_unlock(&pool->queue_lock);
  
-	for(int i = 0; i < pool->maxnum_thread; i++){
+	for(int i = 0; i < pool->maxnum_thread; i++) {
 		pthread_join(pool->thread[i], NULL);
 	}
 
@@ -178,6 +184,7 @@ void destroy_threadpool(thread_pool_t* pool)
 	pthread_mutex_destroy(&pool->queue_lock);
 	pthread_mutex_destroy(&pool->clean_queue_lock);
 	pthread_cond_destroy(&pool->queue_ready);
+	pthread_cond_destroy(&pool->loop_ready);
 	free(pool);
 }
 
@@ -232,7 +239,7 @@ void add_group_to_pool(thread_pool_t *pool, work_group_t *group)
 		return;
 
 	add_group_to_queue(&pool->work_group_head, &pool->queue_lock, group);
-	pthread_cond_signal(&pool->queue_ready);	
+	pthread_cond_signal(&pool->queue_ready);
 }
 
 void add_groups_to_pool(thread_pool_t *pool, int num, ...)
@@ -257,51 +264,51 @@ void add_group_to_pool_cleanup(thread_pool_t *pool, work_group_t *group)
 	if (!group)
 		return;
 
-	add_group_to_queue(&pool->clean_group_head, &pool->clean_queue_lock, group);	
+	add_group_to_queue(&pool->clean_group_head, &pool->clean_queue_lock, group);
 }
 
-void _remove_group_from_pool(thread_pool_t *pool, work_group_t *group)
+void _remove_group_from_queue(work_group_t **queue_head, work_group_t *group)
 {
 	work_group_t *group_tmp;
 
 	// printf("IN ");
-	// group_tmp = pool->work_group_head;
+	// group_tmp = *queue_head;
 	// do {
 	// 	printf("%p|%d ", group_tmp, group_tmp->work_num);
 	// 	group_tmp = group_tmp->next_group;
-	// } while (group_tmp != pool->work_group_head);	
+	// } while (group_tmp != *queue_head);
 	// printf("\n");
 
-	if (pool->work_group_head == group) {
+	if (*queue_head == group) {
 		if (group->next_group == group) {
-			pool->work_group_head = NULL;
+			*queue_head = NULL;
 		} else {
-			for (group_tmp = pool->work_group_head;
-			     group_tmp->next_group != pool->work_group_head;
+			for (group_tmp = *queue_head;
+			     group_tmp->next_group != *queue_head;
 			     group_tmp = group_tmp->next_group);
 			group_tmp->next_group = group->next_group;
-			pool->work_group_head = group->next_group;
+			*queue_head = group->next_group;
 		}
 	} else {
-		group_tmp = pool->work_group_head;
+		group_tmp = *queue_head;
 		do {
 			if (group_tmp->next_group == group) {
 				group_tmp->next_group = group->next_group;
 				break;
 			}
 			group_tmp = group_tmp->next_group;
-		} while (group_tmp != pool->work_group_head);
+		} while (group_tmp != *queue_head);
 	}
 
 	// printf("OUT ");
-	// if (pool->work_group_head) {
-	// 	group_tmp = pool->work_group_head;
+	// if (*queue_head) {
+	// 	group_tmp = *queue_head;
 	// 	do {
 	// 		printf("%p|%d ", group_tmp, group_tmp->work_num);
 	// 		group_tmp = group_tmp->next_group;
-	// 	} while (group_tmp != pool->work_group_head);
+	// 	} while (group_tmp != *queue_head);
 	// 	printf("\n");
-	// }else {
+	// } else {
 	// 	printf("(nil)\n");
 	// }	
 }
@@ -318,7 +325,7 @@ void remove_group_from_pool(thread_pool_t *pool, work_group_t *group)
 		pthread_mutex_unlock(&pool->queue_lock);
 		return;
 	}
-	_remove_group_from_pool(pool, group);
+	_remove_group_from_queue(&pool->work_group_head, group);
 	pthread_mutex_unlock(&pool->queue_lock);
 }
 
@@ -380,12 +387,18 @@ loop:
 	}
 
 	for (j = 0; j < i; j++) {
-		_remove_group_from_pool(pool, group_array[j]);
-		// There might be works running when group removed from pool. So we need
-		// to wait and clean up the group after the works been done. So we append
-		// the groups to a clean up queue.
-		add_group_to_pool_cleanup(pool, group_array[j]);
+		_remove_group_from_queue(&pool->work_group_head, group_array[j]);
 	}
 	pthread_mutex_unlock(&pool->queue_lock);
+
+	// There might be works running when group removed from pool. So we need
+	// to wait and clean up the group after the works been done. So we append
+	// the groups to a clean up queue.
+	pthread_mutex_lock(&pool->clean_queue_lock);
+	for (j = 0; j < i; j++) {
+		_add_group_to_queue(&pool->clean_group_head, group_array[j]);
+	}
+	pthread_mutex_unlock(&pool->clean_queue_lock);
+
 	free(group_array);
 }
