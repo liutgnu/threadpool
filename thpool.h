@@ -40,6 +40,8 @@ typedef struct thread_pool {
 
 	pthread_mutex_t	clean_queue_lock;
 	work_group_t	*clean_group_head;
+	pthread_cond_t	clean_queue_ready;
+	size_t		clean_shutdown;
 } thread_pool_t;
 
 typedef struct func_args {
