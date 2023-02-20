@@ -49,14 +49,10 @@ typedef struct func_args {
 	void *args;
 } func_args_t;
 
-void *group_routine(void *);
 void create_threadpool(thread_pool_t **, size_t);
 void destroy_threadpool(thread_pool_t*);
 work_group_t *add_works_to_group(int, func_args_t []);
-void add_group_to_pool(thread_pool_t *, work_group_t *);
 void add_groups_to_pool(thread_pool_t *, int, ...);
-void remove_group_from_pool(thread_pool_t *, work_group_t *);
 void add_dependents_to_group(work_group_t *, bool (*)(void *),int, ...);
-void delete_dependents_of_group(thread_pool_t *, work_group_t *);
 
 #endif

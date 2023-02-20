@@ -13,6 +13,11 @@ typedef struct pp {
 	int index;
 } pp;
 
+void _remove_group_from_queue(work_group_t **, work_group_t *);
+void delete_dependents_of_group(thread_pool_t *, work_group_t *);
+void remove_group_from_pool(thread_pool_t *, work_group_t *);
+void add_group_to_pool(thread_pool_t *, work_group_t *);
+
 void *group_routine(void *args)
 {
 	pp *p = (pp *)args;
@@ -47,10 +52,16 @@ void *group_routine(void *args)
 		group = pool->work_group_head;
 		do {
 			if (!pthread_mutex_trylock(&group->group_lock)) {
-				pool->work_group_head = group->next_group;
-				pthread_mutex_unlock(&pool->queue_lock);
-				goto success;
+				if (group->dep_group_num > 0) {
+					pthread_mutex_unlock(&group->group_lock);
+					goto fail;
+				} else {
+					pool->work_group_head = group->next_group;
+					pthread_mutex_unlock(&pool->queue_lock);
+					goto success;
+				}
 			}
+fail:
 			group = group->next_group;
 		} while (group != pool->work_group_head);
 
@@ -72,10 +83,7 @@ success:
 		// assert(group->work_num == i);
 		// /**** debug ****/
 
-		if (group->dep_group_num > 0) {
-			pthread_mutex_unlock(&group->group_lock);
-			continue;
-		} else if (!group->dep_group_num &&
+		if (!group->dep_group_num &&
 			   group->group_status == GROUP_UNHANDLED &&
 			   group->cond &&
 			   !group->cond(NULL)) {
@@ -148,38 +156,40 @@ void *clean_routine(void *args)
 
 		if (!pool->clean_group_head && pool->clean_shutdown) {
 			pthread_mutex_unlock(&pool->clean_queue_lock);
+			pthread_cond_broadcast(&pool->loop_ready);
 			pthread_exit(NULL);
 		}
 
 		group = pool->clean_group_head;
 		do {
 			if (!pthread_mutex_trylock(&group->group_lock)) {
-				goto success;
+				if (group->dep_group_num) {
+					pthread_mutex_unlock(&group->group_lock);
+					goto fail;
+				} else {
+					goto success;
+				}
 			}
+fail:
 			group = group->next_group;
 		} while (group != pool->clean_group_head);
 
+		pthread_cond_wait(&pool->clean_queue_ready, &pool->clean_queue_lock);
 		pthread_mutex_unlock(&pool->clean_queue_lock);
 		continue;
 
 success:
-		if (!group->dep_group_num) {
-			_remove_group_from_queue(&pool->clean_group_head, group);
-			pthread_mutex_unlock(&pool->clean_queue_lock);
-			pthread_mutex_destroy(&group->group_lock);
-			if (group->wake_group && group->wake_group->dep_group_num > 0) {
-				pthread_mutex_lock(&group->wake_group->group_lock);
-				group->wake_group->dep_group_num--;
-				assert(group->wake_group->dep_group_num >= 0);
-				pthread_mutex_unlock(&group->wake_group->group_lock);
-			}
-			free(group->work_head);
-			free(group);
-		} else {
-			pthread_mutex_unlock(&group->group_lock);
-			// pthread_cond_wait(&pool->clean_queue_ready, &pool->clean_queue_lock);
-			pthread_mutex_unlock(&pool->clean_queue_lock);	
+		_remove_group_from_queue(&pool->clean_group_head, group);
+		pthread_mutex_unlock(&pool->clean_queue_lock);
+		pthread_mutex_destroy(&group->group_lock);
+		if (group->wake_group && group->wake_group->dep_group_num > 0) {
+			pthread_mutex_lock(&group->wake_group->group_lock);
+			group->wake_group->dep_group_num--;
+			assert(group->wake_group->dep_group_num >= 0);
+			pthread_mutex_unlock(&group->wake_group->group_lock);
 		}
+		free(group->work_head);
+		free(group);
 	}
 }
  
